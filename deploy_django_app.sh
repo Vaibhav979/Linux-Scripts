@@ -12,7 +12,7 @@ code_clone() {
 install_requirements() {
 	echo "Installing Dependencies"
 	sudo apt-get update -y
-	sudo apt-get install docker-ce docker-ce-cli containerd.io nginx -y
+	sudo apt-get install docker.io nginx -y
 }
 
 required_restarts() {
