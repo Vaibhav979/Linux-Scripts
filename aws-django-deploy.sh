@@ -48,7 +48,7 @@ create_ec2_instance() {
 	fi
 
 	echo "Instance $instance_id created successfully."
-	wait_for_instance "$instance_id"
+	echo "$instance_id"
 
 }
 
@@ -66,7 +66,6 @@ wait_for_instance() {
 
 	echo "Instance is running at $public_ip"
 	echo "$public_ip"
-	echo "Now moving on to deployment......................"
 }
 
 #------------------------------
