@@ -78,7 +78,7 @@ deploy_django() {
 
 	# SSH into the instance
 	# The << 'EOF' part means run the following block of commands on the remote server until EOF is reached
-	ssh -o StrictHostKeyChecking=no -i "$key_name.pem" ubuntu@"$public_ip" << 'EOF'
+	ssh -o StrictHostKeyChecking=no -i "$key_name.pem" ubuntu@"$public_ip" << EOF
 
 	set -e
         echo "*************Deployment Started***************"
