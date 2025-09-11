@@ -53,7 +53,7 @@ create_ec2_instance() {
 
 wait_for_instance() {
 	local instance_id="$1"
-	echo "Waiting for instance $instance_id to be in running state...."
+	echo "Waiting for instance $instance_id to be in running state...." >&2
 
 	aws ec2 wait instance-running --instance-ids "$instance_id"
 
@@ -78,7 +78,7 @@ deploy_django() {
 
 	# SSH into the instance
 	# The << 'EOF' part means run the following block of commands on the remote server until EOF is reached
-	ssh -o StrictHostKeyChecking=no -i "$key_name.pem" ubuntu@"$public_ip" << EOF
+	ssh -o StrictHostKeyChecking=no -i "$key_name.pem" ubuntu@"$public_ip" << 'EOF'
 
 	set -e
         echo "*************Deployment Started***************"
@@ -86,24 +86,37 @@ deploy_django() {
 	if [ ! -d "django-notes-app" ]; then
             echo "Cloning the Django app..."
             git clone https://github.com/LondheShubham153/django-notes-app.git
-        else
+	    cd django-notes-app
+	else
             echo "Code directory already exists"
             cd django-notes-app
         fi
 
 	echo "Installing Dependencies"
         sudo apt-get update -y
-        sudo apt-get install -y docker.io docker-compose nginx
+        sudo apt-get install -y docker.io nginx -y
         sudo chown $USER /var/run/docker.sock
+        sudo systemctl enable docker
+	sudo systemctl enable nginx
+	sudo systemctl restart docker
+	docker build -t notes-app .
+	docker run -d -p 8000:8000 notes-app:latest gunicorn --bind 0.0.0.0:8000 django_notes_app.wsgi:application
 
-        echo "Deploying with Docker Compose..."
-        cd django-notes-app
-        docker-compose up -d
 
-        echo "*************Deployed***************"
 EOF
     echo "🎉 Django app should be live at http://$public_ip:8000"
 
+}
+
+open_port_8000() {
+    local security_group_id="$1"
+
+    echo "🔓 Allowing inbound traffic on port 8000 in Security Group: $security_group_id"
+    aws ec2 authorize-security-group-ingress \
+        --group-id "$security_group_id" \
+        --protocol tcp \
+        --port 8000 \
+        --cidr 0.0.0.0/0 || true
 }
 
 # =====================
@@ -125,6 +138,8 @@ main(){
     instance_id=$(create_ec2_instance "$AMI_ID" "$INSTANCE_TYPE" "$KEY_NAME" "$SUBNET_ID" "$SECURITY_GROUP_IDS" "$INSTANCE_NAME")
     public_ip=$(wait_for_instance "$instance_id")
 
+    # 🔓 Open port 8000 on the security group
+    open_port_8000 "$SECURITY_GROUP_IDS"
 
     deploy_django "$public_ip" "$KEY_NAME"
 }
