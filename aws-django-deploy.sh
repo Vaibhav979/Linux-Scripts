@@ -1,0 +1,134 @@
+#!/bin/bash
+#
+set -euo pipefail
+
+# ----------------------------
+# EC2 Infra Setup
+# ----------------------------
+#
+check_awscli(){
+	if ! command -v aws &> /dev/null; then
+		echo "AWS cli is not installed. Spinning up the installation now...."
+		return 1
+	fi
+}
+
+install_awscli() {
+	echo "Installing AWS cli v2....."
+	curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    sudo apt-get install -y unzip &> /dev/null
+    unzip -q awscliv2.zip
+    sudo ./aws/install
+    aws --version
+    rm -rf awscliv2.zip ./aws
+}
+
+create_ec2_instance() {
+	local ami_id="$1"
+	local instance_type="$2"
+	local key_name="$3"
+	local subnet_id="$4"
+	local security_group_ids="$5"
+	local instance_name="$6"
+
+	instance_id=$(aws ec2 run-instances \
+        --image-id "$ami_id" \
+        --instance-type "$instance_type" \
+        --key-name "$key_name" \
+        --subnet-id "$subnet_id" \
+        --security-group-ids "$security_group_ids" \
+        --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$instance_name}]" \
+        --query 'Instances[0].InstanceId' \
+        --output text
+    )
+
+	if [[ -z "$instance_id" ]]; then
+	    echo "Failed to create EC2 instance." >&2
+	    exit 1
+	fi
+
+	echo "Instance $instance_id created successfully."
+	wait_for_instance "$instance_id"
+
+}
+
+wait_for_instance() {
+	local instance_id="$1"
+	echo "Waiting for instance $instance_id to be in running state...."
+
+	aws ec2 wait instance-running --instance-ids "$instance_id"
+
+	#getting public ip of ec2 machine
+	public_ip=$(aws ec2 describe-instances \
+		--instance-ids "$instance_id" \
+		--query 'Reservations[0].Instances[0].PublicIpAddress' \
+		--output text)
+
+	echo "Instance is running at $public_ip"
+	echo "$public_ip"
+	echo "Now moving on to deployment......................"
+}
+
+#------------------------------
+#Django App Deployment
+#------------------------------
+#
+deploy_django() {
+	local public_ip="$1"
+	local key_name="$2"
+
+	echo "Deploying Django App on $public_ip"
+
+	# SSH into the instance
+	# The << 'EOF' part means run the following block of commands on the remote server until EOF is reached
+	ssh -o StrictHostKeyChecking=no -i "$key_name.pem" ubuntu@"$public_ip" << 'EOF'
+
+	set -e
+        echo "*************Deployment Started***************"
+
+	if [ ! -d "django-notes-app" ]; then
+            echo "Cloning the Django app..."
+            git clone https://github.com/LondheShubham153/django-notes-app.git
+        else
+            echo "Code directory already exists"
+            cd django-notes-app
+        fi
+
+	echo "Installing Dependencies"
+        sudo apt-get update -y
+        sudo apt-get install -y docker.io docker-compose nginx
+        sudo chown $USER /var/run/docker.sock
+
+        echo "Deploying with Docker Compose..."
+        cd django-notes-app
+        docker-compose up -d
+
+        echo "*************Deployed***************"
+EOF
+    echo "🎉 Django app should be live at http://$public_ip:8000"
+
+}
+
+# =====================
+# Main
+# =====================
+main(){
+    if ! check_awscli; then
+        install_awscli || exit 1
+    fi
+
+    echo "Creating EC2 instance..."
+    AMI_ID="ami-0a716d3f3b16d290c"
+    INSTANCE_TYPE="t3.micro"
+    KEY_NAME="ssh-key"
+    SUBNET_ID="subnet-0a7550ee1ba1eb834"
+    SECURITY_GROUP_IDS="sg-0032b3d4efe1cf61f"
+    INSTANCE_NAME="Shell-Script-EC2-Demo"
+
+    create_ec2_instance "$AMI_ID" "$INSTANCE_TYPE" "$KEY_NAME" "$SUBNET_ID" "$SECURITY_GROUP_IDS" "$INSTANCE_NAME"
+    public_ip=$(wait_for_instance "$instance_id")
+
+    deploy_django "$public_ip" "$KEY_NAME"
+}
+
+main "$@"
