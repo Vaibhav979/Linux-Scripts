@@ -47,7 +47,6 @@ create_ec2_instance() {
 	    exit 1
 	fi
 
-	echo "Instance $instance_id created successfully."
 	echo "$instance_id"
 
 }
@@ -64,7 +63,6 @@ wait_for_instance() {
 		--query 'Reservations[0].Instances[0].PublicIpAddress' \
 		--output text)
 
-	echo "Instance is running at $public_ip"
 	echo "$public_ip"
 }
 
@@ -124,8 +122,9 @@ main(){
     SECURITY_GROUP_IDS="sg-0032b3d4efe1cf61f"
     INSTANCE_NAME="Shell-Script-EC2-Demo"
 
-    create_ec2_instance "$AMI_ID" "$INSTANCE_TYPE" "$KEY_NAME" "$SUBNET_ID" "$SECURITY_GROUP_IDS" "$INSTANCE_NAME"
+    instance_id=$(create_ec2_instance "$AMI_ID" "$INSTANCE_TYPE" "$KEY_NAME" "$SUBNET_ID" "$SECURITY_GROUP_IDS" "$INSTANCE_NAME")
     public_ip=$(wait_for_instance "$instance_id")
+
 
     deploy_django "$public_ip" "$KEY_NAME"
 }
