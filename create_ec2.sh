@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+STATE_FILE="ec2_state.json" # lightweight 'state file' for tracking instances
+
+# --------------------
+# Utility Functions
+# --------------------
+
 check_awscli() {
     if ! command -v aws &> /dev/null; then
         echo "AWS CLI is not installed. Please install it first." >&2
@@ -24,6 +30,32 @@ install_awscli() {
     rm -rf awscliv2.
 }
 
+init_state() {
+	# initialises the 'state file' if it doesn't exist
+	# an attempt at persisting infra state like terraform
+	if [[ ! -f "$STATE_FILE" ]]; then
+		echo '{"instance":[]}' > "$STATE_FILE"
+	fi
+}
+
+reconcile_state() {
+    echo "Reconciling state file with actual AWS EC2 instances..."
+
+    # Get all actual instance IDs in AWS
+    aws_ids=$(aws ec2 describe-instances --query 'Reservations[*].Instances[*].InstanceId' --output json)
+
+    # Remove instances from state file if they no longer exist
+    tmp_file=$(mktemp)
+    jq --argjson aws_ids "$aws_ids" \
+       '.instances |= map(select(.InstanceId as $id | $aws_ids | index($id)))' \
+       "$STATE_FILE" > "$tmp_file" && mv "$tmp_file" "$STATE_FILE"
+}
+
+
+# -------------------
+# EC2 FUNCTIONS
+# -------------------
+
 create_ec2_instance() {
     local ami_id="$1"
     local instance_type="$2"
@@ -31,6 +63,20 @@ create_ec2_instance() {
     local subnet_id="$4"
     local security_group_ids="$5"
     local instance_name="$6"
+
+    # ---------------------------------------
+    # Attempt at state management:
+    # checking if an instance with this name already exists in the state file i.e is preserved
+    # preventing recreating the same instances (idempotency concept )
+    # ---------------------------------------
+    
+    instance_id=$(jq -r --arg name "$instance_name" '.instances[] | select(.Name==$name) | .InstanceId' "$STATE_FILE")
+
+    if [[ -n "$instance_id" && "$instance_id" != "null" ]]; then
+	    echo "Instance $instance_name already exists (ID: $instance_id). Skipping Creation..."
+	    wait_for_instance "$instance_id"
+	    return
+    fi
 
     # Run AWS CLI command to create EC2 instance
     instance_id=$(aws ec2 run-instances \
@@ -51,6 +97,10 @@ create_ec2_instance() {
 
     echo "Instance $instance_id created successfully."
 
+    # Add the instance to our "state file"
+    jq --arg name "$instance_name" --arg id "$instance_id" \
+       '.instances += [{"Name":$name,"InstanceId":$id,"Status":"pending"}]' "$STATE_FILE" > tmp.json && mv tmp.json "$STATE_FILE"
+
     # Wait for the instance to be in running state
     wait_for_instance "$instance_id"
 }
@@ -63,17 +113,61 @@ wait_for_instance() {
         state=$(aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].State.Name' --output text)
         if [[ "$state" == "running" ]]; then
             echo "Instance $instance_id is now running."
+	    # Updating the state file with the current status
+	    jq --arg id "$instance_id" --arg status "$state" \
+               '(.instances[] | select(.InstanceId==$id) | .Status) = $status' "$STATE_FILE" > tmp.json && mv tmp.json "$STATE_FILE"
             break
         fi
         sleep 10
     done
 }
 
+list_instances() {
+    # Pretty-print all instances tracked in our "state file"
+    echo "Current instances in state:"
+    jq -r '.instances[] | "\(.Name) -> \(.InstanceId) (\(.Status))"' "$STATE_FILE"
+}
+
+delete_instance() {
+	local instance_name="$1"
+
+	# looking instance id from state file
+	instance_id=$(jq -r --arg name "$instance_name" '.instance[] | select(.Name==$name) | .InstanceId' "$STATE_FILE")
+
+	if [[ -z "$instance_id" || "$instance_id" == "null" ]]; then
+		echo "No instance found with name $instance_name in state."
+        return
+    fi
+
+    echo "Terminating instance $instance_name (ID: $instance_id)..."
+    aws ec2 terminate-instances --instance-ids "$instance_id" &> /dev/null
+
+    # Wait until terminated and remove from state
+    while true; do
+        state=$(aws ec2 describe-instances --instance-ids "$instance_id" --query 'Reservations[0].Instances[0].State.Name' --output text 2>/dev/null || echo "terminated")
+        if [[ "$state" == "terminated" ]]; then
+            echo "Instance $instance_name terminated."
+            # Remove from state file
+            jq --arg id "$instance_id" '(.instances[] | select(.InstanceId==$id)) |= empty' "$STATE_FILE" > tmp.json && mv tmp.json "$STATE_FILE"
+            break
+        fi
+        sleep 5
+    done
+}
+
+# -----------------------------------
+# Main
+# -----------------------------------
+
+
 main(){
+	reconcile_state
+
 	if ! check_awscli;
 	then 
 		install_awscli || exit 1
 	fi
+	init_state
 	echo "Creating EC2 instance..."
 
 	#Specify the parameters for creating the EC2 instance
@@ -85,6 +179,8 @@ main(){
 	INSTANCE_NAME="Shell-Script-EC2-Demo"
 
 	create_ec2_instance "$AMI_ID" "$INSTANCE_TYPE" "$KEY_NAME" "$SUBNET_ID" "$SECURITY_GROUP_IDS" "$INSTANCE_NAME"
+
+	list_instances
 
 	echo "EC2 instance creation completed."
 }
