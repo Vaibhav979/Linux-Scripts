@@ -127,14 +127,23 @@ create_ec2_instance() {
 
     # Add full attributes to state (Terraform-style)
     jq --arg name "$instance_name" \
-       --arg id "$instance_id" \
-       --arg type "$instance_type" \
-       --arg ami "$ami_id" \
-       --arg key "$key_name" \
-       --arg subnet "$subnet_id" \
-       --argjson sg_ids "[$(echo $security_group_ids | sed 's/,/","/g' | sed 's/^/"/' | sed 's/$/"/')]}" \
-       '.instances += [{"Name":$name,"InstanceId":$id,"Status":"pending","InstanceType":$type,"AMI_ID":$ami,"KeyName":$key,"SubnetId":$subnet,"SecurityGroupIds":$sg_ids}]' \
-       "$STATE_FILE" > tmp.json && mv tmp.json "$STATE_FILE"
+   --arg id "$instance_id" \
+   --arg type "$instance_type" \
+   --arg ami "$ami_id" \
+   --arg key "$key_name" \
+   --arg subnet "$subnet_id" \
+   --arg sgs "$security_group_ids" \
+   '.instances += [{
+       "Name": $name,
+       "InstanceId": $id,
+       "Status": "pending",
+       "InstanceType": $type,
+       "AMI_ID": $ami,
+       "KeyName": $key,
+       "SubnetId": $subnet,
+       "SecurityGroupIds": ($sgs | split(","))
+   }]' "$STATE_FILE" > tmp.json && mv tmp.json "$STATE_FILE"
+
 
     # Wait for the instance to be in running state
     wait_for_instance "$instance_id"
